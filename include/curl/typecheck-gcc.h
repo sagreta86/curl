@@ -7,7 +7,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2016, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2017, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -124,6 +124,15 @@ __extension__ ({                                                              \
     if(_curl_is_slist_info(_curl_info))                                       \
       if(!_curl_is_arr((arg), struct curl_slist *))                           \
         _curl_easy_getinfo_err_curl_slist();                                  \
+    if(_curl_is_tlssessioninfo_info(_curl_info))                              \
+      if(!_curl_is_arr((arg), struct curl_tlssessioninfo *))                  \
+        _curl_easy_getinfo_err_curl_tlssesssioninfo();                        \
+    if(_curl_is_certinfo_info(_curl_info))                                    \
+      if(!_curl_is_arr((arg), struct curl_certinfo *))                        \
+        _curl_easy_getinfo_err_curl_certinfo();                               \
+   if(_curl_is_socket_info(_curl_info))                                       \
+      if(!_curl_is_arr((arg), curl_socket_t))                                 \
+        _curl_easy_getinfo_err_curl_socket();                                 \
   }                                                                           \
   curl_easy_getinfo(handle, _curl_info, arg);                                 \
 })
@@ -201,6 +210,14 @@ _CURL_WARNING(_curl_easy_getinfo_err_double,
   "curl_easy_getinfo expects a pointer to double for this info")
 _CURL_WARNING(_curl_easy_getinfo_err_curl_slist,
   "curl_easy_getinfo expects a pointer to 'struct curl_slist *' for this info")
+_CURL_WARNING(_curl_easy_getinfo_err_curl_tlssesssioninfo,
+              "curl_easy_getinfo expects a pointer to "
+              "'struct curl_tlssessioninfo *' for this info")
+_CURL_WARNING(_curl_easy_getinfo_err_curl_certinfo,
+              "curl_easy_getinfo expects a pointer to "
+              "'struct curl_certinfo *' for this info")
+_CURL_WARNING(_curl_easy_getinfo_err_curl_socket,
+  "curl_easy_getinfo expects a pointer to curl_socket_t for this info")
 
 /* groups of curl_easy_setops options that take the same type of argument */
 
@@ -249,11 +266,25 @@ _CURL_WARNING(_curl_easy_getinfo_err_curl_slist,
    (option) == CURLOPT_NOPROXY ||                                             \
    (option) == CURLOPT_PASSWORD ||                                            \
    (option) == CURLOPT_PINNEDPUBLICKEY ||                                     \
+   (option) == CURLOPT_PRE_PROXY ||                                           \
    (option) == CURLOPT_PROXY ||                                               \
    (option) == CURLOPT_PROXYPASSWORD ||                                       \
    (option) == CURLOPT_PROXYUSERNAME ||                                       \
    (option) == CURLOPT_PROXYUSERPWD ||                                        \
+   (option) == CURLOPT_PROXY_CAINFO ||                                        \
+   (option) == CURLOPT_PROXY_CAPATH ||                                        \
+   (option) == CURLOPT_PROXY_CRLFILE ||                                       \
+   (option) == CURLOPT_PROXY_KEYPASSWD ||                                     \
+   (option) == CURLOPT_PROXY_PINNEDPUBLICKEY ||                               \
    (option) == CURLOPT_PROXY_SERVICE_NAME ||                                  \
+   (option) == CURLOPT_PROXY_SSLCERT ||                                       \
+   (option) == CURLOPT_PROXY_SSLCERTTYPE ||                                   \
+   (option) == CURLOPT_PROXY_SSLKEY ||                                        \
+   (option) == CURLOPT_PROXY_SSLKEYTYPE ||                                    \
+   (option) == CURLOPT_PROXY_SSL_CIPHER_LIST ||                               \
+   (option) == CURLOPT_PROXY_TLSAUTH_PASSWORD ||                              \
+   (option) == CURLOPT_PROXY_TLSAUTH_USERNAME ||                              \
+   (option) == CURLOPT_PROXY_TLSAUTH_TYPE ||                                  \
    (option) == CURLOPT_RANDOM_FILE ||                                         \
    (option) == CURLOPT_RANGE ||                                               \
    (option) == CURLOPT_REFERER ||                                             \
@@ -348,8 +379,19 @@ _CURL_WARNING(_curl_easy_getinfo_err_curl_slist,
   (CURLINFO_DOUBLE < (info) && (info) < CURLINFO_SLIST)
 
 /* true if info expects a pointer to struct curl_slist * argument */
-#define _curl_is_slist_info(info)                                             \
-  (CURLINFO_SLIST < (info) && (info) < CURLINFO_SOCKET)
+#define _curl_is_slist_info(info)                                       \
+  (((info) == CURLINFO_SSL_ENGINES) || ((info) == CURLINFO_COOKIELIST))
+
+/* true if info expects a pointer to struct curl_tlssessioninfo * argument */
+#define _curl_is_tlssessioninfo_info(info)                              \
+  (((info) == CURLINFO_TLS_SSL_PTR) || ((info) == CURLINFO_TLS_SESSION))
+
+/* true if info expects a pointer to struct curl_certinfo * argument */
+#define _curl_is_certinfo_info(info) ((info) == CURLINFO_CERTINFO)
+
+/* true if info expects a pointer to struct curl_socket_t argument */
+#define _curl_is_socket_info(info)                                            \
+  (CURLINFO_SOCKET < (info))
 
 
 /* typecheck helpers -- check whether given expression has requested type*/
@@ -428,8 +470,9 @@ _CURL_WARNING(_curl_easy_getinfo_err_curl_slist,
 #endif
 
 /* evaluates to true if expr is of type FILE* */
-#define _curl_is_FILE(expr)                                                   \
-  (__builtin_types_compatible_p(__typeof__(expr), FILE *))
+#define _curl_is_FILE(expr)                                             \
+  (_curl_is_NULL(expr) ||                                              \
+   (__builtin_types_compatible_p(__typeof__(expr), FILE *)))
 
 /* evaluates to true if expr can be passed as POST data (void* or char*) */
 #define _curl_is_postfields(expr)                                             \

@@ -7,7 +7,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2016, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2017, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -26,6 +26,12 @@
 #include "tool_sdecls.h"
 
 #include "tool_metalink.h"
+
+typedef enum {
+  ERR_NONE,
+  ERR_BINARY_TERMINAL = 1, /* binary to terminal detected */
+  ERR_LAST
+} curl_error;
 
 struct GlobalConfig;
 
@@ -138,9 +144,11 @@ struct OperationConfig {
   bool readbusy;            /* set when reading input returns EAGAIN */
   bool globoff;
   bool use_httpget;
+  bool strip_path_slash;
   bool insecure_ok;         /* set TRUE to allow insecure SSL connects */
   bool proxy_insecure_ok;   /* set TRUE to allow insecure SSL connects
                                for proxy */
+  bool terminal_binary_ok;
   bool verifystatus;
   bool create_dirs;
   bool ftp_create_dirs;
@@ -151,7 +159,6 @@ struct OperationConfig {
   bool proxybasic;
   bool proxyanyauth;
   char *writeout;           /* %-styled format string to output */
-  bool writeenv;            /* write results to environment, if available */
   struct curl_slist *quote;
   struct curl_slist *postquote;
   struct curl_slist *prequote;
@@ -237,6 +244,8 @@ struct OperationConfig {
   double expect100timeout;
   bool suppress_connect_headers;  /* suppress proxy CONNECT response headers
                                      from user callbacks */
+  curl_error synthetic_error;     /* if non-zero, it overrides any libcurl
+                                     error */
   struct GlobalConfig *global;
   struct OperationConfig *prev;
   struct OperationConfig *next;   /* Always last in the struct */

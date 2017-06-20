@@ -405,8 +405,7 @@ static CURLcode readwrite_data(struct Curl_easy *data,
   /* This is where we loop until we have read everything there is to
      read or we get a CURLE_AGAIN */
   do {
-    size_t buffersize = data->set.buffer_size?
-      data->set.buffer_size : BUFSIZE;
+    size_t buffersize = data->set.buffer_size;
     size_t bytestoread = buffersize;
 
     if(
@@ -681,8 +680,6 @@ static CURLcode readwrite_data(struct Curl_easy *data,
         excess = (size_t)(k->bytecount + nread - k->maxdownload);
         if(excess > 0 && !k->ignorebody) {
           if(Curl_pipeline_wanted(conn->data->multi, CURLPIPE_HTTP1)) {
-            /* The 'excess' amount below can't be more than BUFSIZE which
-               always will fit in a size_t */
             infof(data,
                   "Rewinding stream by : %zu"
                   " bytes on url %s (size = %" CURL_FORMAT_CURL_OFF_T
@@ -892,7 +889,7 @@ static CURLcode readwrite_upload(struct Curl_easy *data,
           *didwhat &= ~KEEP_SEND;  /* we didn't write anything actually */
 
           /* set a timeout for the multi interface */
-          Curl_expire(data, data->set.expect_100_timeout);
+          Curl_expire(data, data->set.expect_100_timeout, EXPIRE_100_TIMEOUT);
           break;
         }
 
@@ -905,7 +902,7 @@ static CURLcode readwrite_upload(struct Curl_easy *data,
             sending_http_headers = FALSE;
         }
 
-        result = Curl_fillreadbuffer(conn, BUFSIZE, &fillcount);
+        result = Curl_fillreadbuffer(conn, UPLOAD_BUFSIZE, &fillcount);
         if(result)
           return result;
 
@@ -937,7 +934,7 @@ static CURLcode readwrite_upload(struct Curl_easy *data,
          (data->set.crlf))) {
         /* Do we need to allocate a scratch buffer? */
         if(!data->state.scratch) {
-          data->state.scratch = malloc(2 * BUFSIZE);
+          data->state.scratch = malloc(2 * data->set.buffer_size);
           if(!data->state.scratch) {
             failf(data, "Failed to alloc scratch buffer!");
 
@@ -1142,6 +1139,7 @@ CURLcode Curl_readwrite(struct connectdata *conn,
         /* we've waited long enough, continue anyway */
         k->exp100 = EXP100_SEND_DATA;
         k->keepon |= KEEP_SEND;
+        Curl_expire_done(data, EXPIRE_100_TIMEOUT);
         infof(data, "Done waiting for 100-continue\n");
       }
     }
@@ -1311,8 +1309,11 @@ CURLcode Curl_pretransfer(struct Curl_easy *data)
 
   if(data->set.httpreq == HTTPREQ_PUT)
     data->state.infilesize = data->set.filesize;
-  else
+  else {
     data->state.infilesize = data->set.postfieldsize;
+    if(data->set.postfields && (data->state.infilesize == -1))
+      data->state.infilesize = (curl_off_t)strlen(data->set.postfields);
+  }
 
   /* If there is a list of cookie files to read, do it now! */
   if(data->change.cookielist)
@@ -1341,10 +1342,10 @@ CURLcode Curl_pretransfer(struct Curl_easy *data)
     Curl_pgrsStartNow(data);
 
     if(data->set.timeout)
-      Curl_expire(data, data->set.timeout);
+      Curl_expire(data, data->set.timeout, EXPIRE_TIMEOUT);
 
     if(data->set.connecttimeout)
-      Curl_expire(data, data->set.connecttimeout);
+      Curl_expire(data, data->set.connecttimeout, EXPIRE_CONNECTTIMEOUT);
 
     /* In case the handle is re-used and an authentication method was picked
        in the session we need to make sure we only use the one(s) we now
@@ -1626,9 +1627,7 @@ static char *concat_url(const char *base, const char *relurl)
  * as given by the remote server and set up the new URL to request.
  */
 CURLcode Curl_follow(struct Curl_easy *data,
-                     char *newurl, /* this 'newurl' is the Location: string,
-                                      and it must be malloc()ed before passed
-                                      here */
+                     char *newurl,    /* the Location: string */
                      followtype type) /* see transfer.h */
 {
 #ifdef CURL_DISABLE_HTTP
@@ -1641,33 +1640,36 @@ CURLcode Curl_follow(struct Curl_easy *data,
 
   /* Location: redirect */
   bool disallowport = FALSE;
+  bool reachedmax = FALSE;
 
   if(type == FOLLOW_REDIR) {
     if((data->set.maxredirs != -1) &&
-        (data->set.followlocation >= data->set.maxredirs)) {
-      failf(data, "Maximum (%ld) redirects followed", data->set.maxredirs);
-      return CURLE_TOO_MANY_REDIRECTS;
+       (data->set.followlocation >= data->set.maxredirs)) {
+      reachedmax = TRUE;
+      type = FOLLOW_FAKE; /* switch to fake to store the would-be-redirected
+                             to URL */
     }
+    else {
+      /* mark the next request as a followed location: */
+      data->state.this_is_a_follow = TRUE;
 
-    /* mark the next request as a followed location: */
-    data->state.this_is_a_follow = TRUE;
+      data->set.followlocation++; /* count location-followers */
 
-    data->set.followlocation++; /* count location-followers */
+      if(data->set.http_auto_referer) {
+        /* We are asked to automatically set the previous URL as the referer
+           when we get the next URL. We pick the ->url field, which may or may
+           not be 100% correct */
 
-    if(data->set.http_auto_referer) {
-      /* We are asked to automatically set the previous URL as the referer
-         when we get the next URL. We pick the ->url field, which may or may
-         not be 100% correct */
+        if(data->change.referer_alloc) {
+          Curl_safefree(data->change.referer);
+          data->change.referer_alloc = FALSE;
+        }
 
-      if(data->change.referer_alloc) {
-        Curl_safefree(data->change.referer);
-        data->change.referer_alloc = FALSE;
+        data->change.referer = strdup(data->change.url);
+        if(!data->change.referer)
+          return CURLE_OUT_OF_MEMORY;
+        data->change.referer_alloc = TRUE; /* yes, free this later */
       }
-
-      data->change.referer = strdup(data->change.url);
-      if(!data->change.referer)
-        return CURLE_OUT_OF_MEMORY;
-      data->change.referer_alloc = TRUE; /* yes, free this later */
     }
   }
 
@@ -1679,7 +1681,6 @@ CURLcode Curl_follow(struct Curl_easy *data,
     char *absolute = concat_url(data->change.url, newurl);
     if(!absolute)
       return CURLE_OUT_OF_MEMORY;
-    free(newurl);
     newurl = absolute;
   }
   else {
@@ -1695,8 +1696,6 @@ CURLcode Curl_follow(struct Curl_easy *data,
     if(!newest)
       return CURLE_OUT_OF_MEMORY;
     strcpy_url(newest, newurl); /* create a space-free URL */
-
-    free(newurl); /* that was no good */
     newurl = newest; /* use this instead now */
 
   }
@@ -1705,6 +1704,11 @@ CURLcode Curl_follow(struct Curl_easy *data,
     /* we're only figuring out the new url if we would've followed locations
        but now we're done so we can get out! */
     data->info.wouldredirect = newurl;
+
+    if(reachedmax) {
+      failf(data, "Maximum (%ld) redirects followed", data->set.maxredirs);
+      return CURLE_TOO_MANY_REDIRECTS;
+    }
     return CURLE_OK;
   }
 
@@ -1718,7 +1722,6 @@ CURLcode Curl_follow(struct Curl_easy *data,
 
   data->change.url = newurl;
   data->change.url_alloc = TRUE;
-  newurl = NULL; /* don't free! */
 
   infof(data, "Issue another request to this URL: '%s'\n", data->change.url);
 
@@ -1945,7 +1948,7 @@ Curl_setup_transfer(
 
         /* Set a timeout for the multi interface. Add the inaccuracy margin so
            that we don't fire slightly too early and get denied to run. */
-        Curl_expire(data, data->set.expect_100_timeout);
+        Curl_expire(data, data->set.expect_100_timeout, EXPIRE_100_TIMEOUT);
       }
       else {
         if(data->state.expect100header)

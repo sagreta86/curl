@@ -140,6 +140,19 @@ static CURLcode parse_login_details(const char *login, const size_t len,
                                     char **optionsptr);
 static unsigned int get_protocol_family(unsigned int protocol);
 
+#define READBUFFER_SIZE CURL_MAX_WRITE_SIZE
+#define READBUFFER_MAX  CURL_MAX_READ_SIZE
+#define READBUFFER_MIN  1024
+
+/* Some parts of the code (e.g. chunked encoding) assume this buffer has at
+ * more than just a few bytes to play with. Don't let it become too small or
+ * bad things will happen.
+ */
+#if READBUFFER_SIZE < READBUFFER_MIN
+# error READBUFFER_SIZE is too small
+#endif
+
+
 /*
  * Protocol table.
  */
@@ -607,6 +620,7 @@ CURLcode Curl_init_userdefined(struct UserDefined *set)
 
   set->expect_100_timeout = 1000L; /* Wait for a second by default. */
   set->sep_headers = TRUE; /* separated header lists by default */
+  set->buffer_size = READBUFFER_SIZE;
 
   Curl_http2_init_userset(set);
   return result;
@@ -644,7 +658,7 @@ CURLcode Curl_open(struct Curl_easy **curl)
 
   /* We do some initial setup here, all those fields that can't be just 0 */
 
-  data->state.buffer = malloc(BUFSIZE + 1);
+  data->state.buffer = malloc(READBUFFER_SIZE + 1);
   if(!data->state.buffer) {
     DEBUGF(fprintf(stderr, "Error: malloc of buffer failed\n"));
     result = CURLE_OUT_OF_MEMORY;
@@ -814,6 +828,10 @@ CURLcode Curl_setopt(struct Curl_easy *data, CURLoption option,
       /* In HTTP, the opposite of upload is GET (unless NOBODY is true as
          then this can be changed to HEAD later on) */
       data->set.httpreq = HTTPREQ_GET;
+    break;
+  case CURLOPT_STRIP_PATH_SLASH:
+    arg = va_arg(param, long);
+    data->set.strip_path_slash = (bool)arg;
     break;
   case CURLOPT_FILETIME:
     /*
@@ -1009,8 +1027,8 @@ CURLcode Curl_setopt(struct Curl_easy *data, CURLoption option,
      * CURL_REDIR_POST_ALL - POST is kept as POST after 301, 302 and 303
      * other - POST is kept as POST after 301 and 302
      */
-    int postRedir = curlx_sltosi(va_arg(param, long));
-    data->set.keep_post = postRedir & CURL_REDIR_POST_ALL;
+    arg = va_arg(param, long);
+    data->set.keep_post = arg & CURL_REDIR_POST_ALL;
   }
   break;
 
@@ -2061,13 +2079,19 @@ CURLcode Curl_setopt(struct Curl_easy *data, CURLoption option,
     /*
      * Set what local port to bind the socket to when performing an operation.
      */
-    data->set.localport = curlx_sltous(va_arg(param, long));
+    arg = va_arg(param, long);
+    if((arg < 0) || (arg > 65535))
+      return CURLE_BAD_FUNCTION_ARGUMENT;
+    data->set.localport = curlx_sltous(arg);
     break;
   case CURLOPT_LOCALPORTRANGE:
     /*
      * Set number of local ports to try, starting with CURLOPT_LOCALPORT.
      */
-    data->set.localportrange = curlx_sltosi(va_arg(param, long));
+    arg = va_arg(param, long);
+    if((arg < 0) || (arg > 65535))
+      return CURLE_BAD_FUNCTION_ARGUMENT;
+    data->set.localportrange = curlx_sltosi(arg);
     break;
   case CURLOPT_KRBLEVEL:
     /*
@@ -2284,22 +2308,26 @@ CURLcode Curl_setopt(struct Curl_easy *data, CURLoption option,
      * The application kindly asks for a differently sized receive buffer.
      * If it seems reasonable, we'll use it.
      */
-    data->set.buffer_size = va_arg(param, long);
+    arg = va_arg(param, long);
 
-    if(data->set.buffer_size > MAX_BUFSIZE)
-      data->set.buffer_size = MAX_BUFSIZE; /* huge internal default */
-    else if(data->set.buffer_size < 1)
-      data->set.buffer_size = BUFSIZE;
+    if(arg > READBUFFER_MAX)
+      arg = READBUFFER_MAX;
+    else if(arg < 1)
+      arg = READBUFFER_SIZE;
+    else if(arg < READBUFFER_MIN)
+      arg = READBUFFER_MIN;
 
-    /* Resize only if larger than default buffer size. */
-    if(data->set.buffer_size > BUFSIZE) {
-      data->state.buffer = realloc(data->state.buffer,
-                                   data->set.buffer_size + 1);
-      if(!data->state.buffer) {
+    /* Resize if new size */
+    if(arg != data->set.buffer_size) {
+      char *newbuff = realloc(data->state.buffer, arg + 1);
+      if(!newbuff) {
         DEBUGF(fprintf(stderr, "Error: realloc of buffer failed\n"));
         result = CURLE_OUT_OF_MEMORY;
       }
+      else
+        data->state.buffer = newbuff;
     }
+    data->set.buffer_size = arg;
 
     break;
 
@@ -2592,7 +2620,10 @@ CURLcode Curl_setopt(struct Curl_easy *data, CURLoption option,
      * know that an unsigned int will always hold the value so we blindly
      * typecast to this type
      */
-    data->set.scope_id = curlx_sltoui(va_arg(param, long));
+    arg = va_arg(param, long);
+    if((arg < 0) || (arg > 0xf))
+      return CURLE_BAD_FUNCTION_ARGUMENT;
+    data->set.scope_id = curlx_sltoui(arg);
     break;
 
   case CURLOPT_PROTOCOLS:
@@ -2794,13 +2825,17 @@ CURLcode Curl_setopt(struct Curl_easy *data, CURLoption option,
       data->set.proxy_ssl.authtype = CURL_TLSAUTH_SRP; /* default to SRP */
     break;
   case CURLOPT_TLSAUTH_TYPE:
-    if(strncasecompare((char *)va_arg(param, char *), "SRP", strlen("SRP")))
+    argptr = va_arg(param, char *);
+    if(!argptr ||
+       strncasecompare(argptr, "SRP", strlen("SRP")))
       data->set.ssl.authtype = CURL_TLSAUTH_SRP;
     else
       data->set.ssl.authtype = CURL_TLSAUTH_NONE;
     break;
   case CURLOPT_PROXY_TLSAUTH_TYPE:
-    if(strncasecompare((char *)va_arg(param, char *), "SRP", strlen("SRP")))
+    argptr = va_arg(param, char *);
+    if(!argptr ||
+       strncasecompare(argptr, "SRP", strlen("SRP")))
       data->set.proxy_ssl.authtype = CURL_TLSAUTH_SRP;
     else
       data->set.proxy_ssl.authtype = CURL_TLSAUTH_NONE;
@@ -2992,6 +3027,7 @@ static void conn_free(struct connectdata *conn)
   Curl_safefree(conn->http_proxy.host.rawalloc); /* http proxy name buffer */
   Curl_safefree(conn->socks_proxy.host.rawalloc); /* socks proxy name buffer */
   Curl_safefree(conn->master_buffer);
+  Curl_safefree(conn->connect_state);
 
   conn_reset_all_postponed_data(conn);
 
@@ -3099,12 +3135,16 @@ static bool SocketIsDead(curl_socket_t sock)
 }
 
 /*
- * IsPipeliningPossible() returns TRUE if the options set would allow
- * pipelining/multiplexing and the connection is using a HTTP protocol.
+ * IsPipeliningPossible()
+ *
+ * Return a bitmask with the available pipelining and multiplexing options for
+ * the given requested connection.
  */
-static bool IsPipeliningPossible(const struct Curl_easy *handle,
-                                 const struct connectdata *conn)
+static int IsPipeliningPossible(const struct Curl_easy *handle,
+                                const struct connectdata *conn)
 {
+  int avail = 0;
+
   /* If a HTTP protocol and pipelining is enabled */
   if((conn->handler->protocol & PROTO_FAMILY_HTTP) &&
      (!conn->bits.protoconnstart || !conn->bits.close)) {
@@ -3114,14 +3154,14 @@ static bool IsPipeliningPossible(const struct Curl_easy *handle,
        (handle->set.httpreq == HTTPREQ_GET ||
         handle->set.httpreq == HTTPREQ_HEAD))
       /* didn't ask for HTTP/1.0 and a GET or HEAD */
-      return TRUE;
+      avail |= CURLPIPE_HTTP1;
 
     if(Curl_pipeline_wanted(handle->multi, CURLPIPE_MULTIPLEX) &&
        (handle->set.httpversion >= CURL_HTTP_VERSION_2))
       /* allows HTTP/2 */
-      return TRUE;
+      avail |= CURLPIPE_MULTIPLEX;
   }
-  return FALSE;
+  return avail;
 }
 
 int Curl_removeHandleFromPipeline(struct Curl_easy *handle,
@@ -3408,7 +3448,7 @@ ConnectionExists(struct Curl_easy *data,
   struct connectdata *check;
   struct connectdata *chosen = 0;
   bool foundPendingCandidate = FALSE;
-  bool canPipeline = IsPipeliningPossible(data, needle);
+  int canpipe = IsPipeliningPossible(data, needle);
   struct connectbundle *bundle;
 
 #ifdef USE_NTLM
@@ -3424,10 +3464,10 @@ ConnectionExists(struct Curl_easy *data,
   *force_reuse = FALSE;
   *waitpipe = FALSE;
 
-  /* We can't pipe if the site is blacklisted */
-  if(canPipeline && Curl_pipeline_site_blacklisted(data, needle)) {
-    canPipeline = FALSE;
-  }
+  /* We can't pipeline if the site is blacklisted */
+  if((canpipe & CURLPIPE_HTTP1) &&
+     Curl_pipeline_site_blacklisted(data, needle))
+    canpipe &= ~ CURLPIPE_HTTP1;
 
   /* Look up the bundle with all the connections to this
      particular host */
@@ -3447,8 +3487,8 @@ ConnectionExists(struct Curl_easy *data,
            (bundle->multiuse == BUNDLE_MULTIPLEX ?
             "can multiplex" : "serially")));
 
-    /* We can't pipe if we don't know anything about the server */
-    if(canPipeline) {
+    /* We can't pipeline if we don't know anything about the server */
+    if(canpipe) {
       if(bundle->multiuse <= BUNDLE_UNKNOWN) {
         if((bundle->multiuse == BUNDLE_UNKNOWN) && data->set.pipewait) {
           infof(data, "Server doesn't support multi-use yet, wait\n");
@@ -3457,18 +3497,18 @@ ConnectionExists(struct Curl_easy *data,
         }
 
         infof(data, "Server doesn't support multi-use (yet)\n");
-        canPipeline = FALSE;
+        canpipe = 0;
       }
       if((bundle->multiuse == BUNDLE_PIPELINING) &&
          !Curl_pipeline_wanted(data->multi, CURLPIPE_HTTP1)) {
         /* not asked for, switch off */
         infof(data, "Could pipeline, but not asked to!\n");
-        canPipeline = FALSE;
+        canpipe = 0;
       }
       else if((bundle->multiuse == BUNDLE_MULTIPLEX) &&
               !Curl_pipeline_wanted(data->multi, CURLPIPE_MULTIPLEX)) {
         infof(data, "Could multiplex, but not asked to!\n");
-        canPipeline = FALSE;
+        canpipe = 0;
       }
     }
 
@@ -3489,20 +3529,21 @@ ConnectionExists(struct Curl_easy *data,
 
       pipeLen = check->send_pipe.size + check->recv_pipe.size;
 
-      if(canPipeline) {
+      if(canpipe) {
         if(check->bits.protoconnstart && check->bits.close)
           continue;
 
         if(!check->bits.multiplex) {
-          /* If not multiplexing, make sure the pipe has only GET requests */
+          /* If not multiplexing, make sure the connection is fine for HTTP/1
+             pipelining */
           struct Curl_easy* sh = gethandleathead(&check->send_pipe);
           struct Curl_easy* rh = gethandleathead(&check->recv_pipe);
           if(sh) {
-            if(!IsPipeliningPossible(sh, check))
+            if(!(IsPipeliningPossible(sh, check) & CURLPIPE_HTTP1))
               continue;
           }
           else if(rh) {
-            if(!IsPipeliningPossible(rh, check))
+            if(!(IsPipeliningPossible(rh, check) & CURLPIPE_HTTP1))
               continue;
           }
         }
@@ -3610,7 +3651,7 @@ ConnectionExists(struct Curl_easy *data,
         }
       }
 
-      if(!canPipeline && check->inuse)
+      if(!canpipe && check->inuse)
         /* this request can't be pipelined but the checked connection is
            already in use so we skip it */
         continue;
@@ -3741,7 +3782,7 @@ ConnectionExists(struct Curl_easy *data,
           continue;
         }
 #endif
-        if(canPipeline) {
+        if(canpipe) {
           /* We can pipeline if we want to. Let's continue looking for
              the optimal connection to use, i.e the shortest pipe that is not
              blacklisted. */
@@ -3976,7 +4017,7 @@ CURLcode Curl_protocol_connect(struct connectdata *conn,
       return CURLE_OK;
 
     if(conn->bits.tunnel_proxy && conn->bits.httpproxy &&
-       (conn->tunnel_state[FIRSTSOCKET] != TUNNEL_COMPLETE))
+       Curl_connect_ongoing(conn))
       /* when using an HTTP tunnel proxy, await complete tunnel establishment
          before proceeding further. Return CURLE_OK so we'll be called again */
       return CURLE_OK;
@@ -4202,7 +4243,7 @@ static struct connectdata *allocate_conn(struct Curl_easy *data)
   if(Curl_pipeline_wanted(data->multi, CURLPIPE_HTTP1) &&
      !conn->master_buffer) {
     /* Allocate master_buffer to be used for HTTP/1 pipelining */
-    conn->master_buffer = calloc(BUFSIZE, sizeof(char));
+    conn->master_buffer = calloc(MASTERBUF_SIZE, sizeof(char));
     if(!conn->master_buffer)
       goto error;
   }
@@ -4326,11 +4367,16 @@ static CURLcode parseurlandfillconn(struct Curl_easy *data,
     return CURLE_URL_MALFORMAT;
   }
 
-  /* Make sure we don't mistake a drive letter for a scheme, for example:
+  /* MSDOS/Windows style drive prefix, eg c: in c:foo */
+#define STARTS_WITH_DRIVE_PREFIX(str) \
+  ((('a' <= str[0] && str[0] <= 'z') || \
+    ('A' <= str[0] && str[0] <= 'Z')) && \
+   (str[1] == ':'))
+
+  /* Don't mistake a drive letter for a scheme if the default protocol is file.
      curld --proto-default file c:/foo/bar.txt */
-  if((('a' <= data->change.url[0] && data->change.url[0] <= 'z') ||
-      ('A' <= data->change.url[0] && data->change.url[0] <= 'Z')) &&
-     data->change.url[1] == ':' && data->set.str[STRING_DEFAULT_PROTOCOL] &&
+  if(STARTS_WITH_DRIVE_PREFIX(data->change.url) &&
+     data->set.str[STRING_DEFAULT_PROTOCOL] &&
      strcasecompare(data->set.str[STRING_DEFAULT_PROTOCOL], "file")) {
     ; /* do nothing */
   }
@@ -4349,8 +4395,6 @@ static CURLcode parseurlandfillconn(struct Curl_easy *data,
   if((url_has_scheme && strncasecompare(data->change.url, "file:", 5)) ||
      (!url_has_scheme && data->set.str[STRING_DEFAULT_PROTOCOL] &&
       strcasecompare(data->set.str[STRING_DEFAULT_PROTOCOL], "file"))) {
-    bool path_has_drive = FALSE;
-
     if(url_has_scheme)
       rc = sscanf(data->change.url, "%*15[^\n/:]:%[^\n]", path);
     else
@@ -4372,17 +4416,12 @@ static CURLcode parseurlandfillconn(struct Curl_easy *data,
       memmove(path, path + 2, strlen(path + 2)+1);
     }
 
-    /* the path may start with a drive letter. for backwards compatibility
-       we skip some processing on those paths. */
-    path_has_drive = (('a' <= path[0] && path[0] <= 'z') ||
-                      ('A' <= path[0] && path[0] <= 'Z')) && path[1] == ':';
-
     /*
      * we deal with file://<host>/<path> differently since it supports no
      * hostname other than "localhost" and "127.0.0.1", which is unique among
      * the URL protocols specified in RFC 1738
      */
-    if(path[0] != '/' && !path_has_drive) {
+    if(path[0] != '/' && !STARTS_WITH_DRIVE_PREFIX(path)) {
       /* the URL includes a host name, it must match "localhost" or
          "127.0.0.1" to be valid */
       char *ptr;
@@ -4416,19 +4455,17 @@ static CURLcode parseurlandfillconn(struct Curl_easy *data,
 
       /* This cannot be made with strcpy, as the memory chunks overlap! */
       memmove(path, ptr, strlen(ptr)+1);
-
-      path_has_drive = (('a' <= path[0] && path[0] <= 'z') ||
-                        ('A' <= path[0] && path[0] <= 'Z')) && path[1] == ':';
     }
 
 #if !defined(MSDOS) && !defined(WIN32) && !defined(__CYGWIN__)
-    if(path_has_drive) {
+    if(STARTS_WITH_DRIVE_PREFIX(path)) {
       failf(data, "File drive letters are only accepted in MSDOS/Windows.");
       return CURLE_URL_MALFORMAT;
     }
 #endif
 
     protop = "file"; /* protocol string */
+    *prot_missing = !url_has_scheme;
   }
   else {
     /* clear path */
@@ -4592,14 +4629,30 @@ static CURLcode parseurlandfillconn(struct Curl_easy *data,
 
     size_t plen = strlen(path); /* new path, should be 1 byte longer than
                                    the original */
-    size_t urllen = strlen(data->change.url); /* original URL length */
-
     size_t prefixlen = strlen(conn->host.name);
 
-    if(!*prot_missing)
-      prefixlen += strlen(protop) + strlen("://");
+    if(!*prot_missing) {
+      size_t protolen = strlen(protop);
 
-    reurl = malloc(urllen + 2); /* 2 for zerobyte + slash */
+      if(curl_strnequal(protop, data->change.url, protolen))
+        prefixlen += protolen;
+      else {
+        failf(data, "<url> malformed");
+        return CURLE_URL_MALFORMAT;
+      }
+
+      if(curl_strnequal("://", &data->change.url[protolen], 3))
+        prefixlen += 3;
+      /* only file: is allowed to omit one or both slashes */
+      else if(curl_strnequal("file:", data->change.url, 5))
+        prefixlen += 1 + (data->change.url[5] == '/');
+      else {
+        failf(data, "<url> malformed");
+        return CURLE_URL_MALFORMAT;
+      }
+    }
+
+    reurl = malloc(prefixlen + plen + 1);
     if(!reurl)
       return CURLE_OUT_OF_MEMORY;
 
@@ -5294,12 +5347,15 @@ static CURLcode create_conn_helper_init_proxy(struct connectdata *conn)
       result = CURLE_UNSUPPORTED_PROTOCOL;
       goto out;
 #else
-      /* force this connection's protocol to become HTTP if not already
-         compatible - if it isn't tunneling through */
-      if(!(conn->handler->protocol & PROTO_FAMILY_HTTP) &&
-         !conn->bits.tunnel_proxy)
-        conn->handler = &Curl_handler_http;
-
+      /* force this connection's protocol to become HTTP if compatible */
+      if(!(conn->handler->protocol & PROTO_FAMILY_HTTP)) {
+        if((conn->handler->flags & PROTOPT_PROXY_AS_HTTP) &&
+           !conn->bits.tunnel_proxy)
+          conn->handler = &Curl_handler_http;
+        else
+          /* if not converting to HTTP over the proxy, enforce tunneling */
+          conn->bits.tunnel_proxy = TRUE;
+      }
       conn->bits.httpproxy = TRUE;
 #endif
     }

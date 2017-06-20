@@ -7,7 +7,7 @@ DPAGES = abstract-unix-socket.d anyauth.d append.d basic.d cacert.d capath.d cer
   data-raw.d data-urlencode.d delegation.d digest.d disable.d           \
   disable-eprt.d disable-epsv.d dns-interface.d dns-ipv4-addr.d         \
   dns-ipv6-addr.d dns-servers.d dump-header.d egd-file.d engine.d       \
-  environment.d expect100-timeout.d fail.d fail-early.d false-start.d   \
+  expect100-timeout.d fail.d fail-early.d false-start.d                 \
   form.d form-string.d ftp-account.d ftp-alternative-to-user.d          \
   ftp-create-dirs.d ftp-method.d ftp-pasv.d ftp-port.d ftp-pret.d       \
   ftp-skip-pasv-ip.d ftp-ssl-ccc.d ftp-ssl-ccc-mode.d ftp-ssl-control.d \
@@ -42,6 +42,6 @@ DPAGES = abstract-unix-socket.d anyauth.d append.d basic.d cacert.d capath.d cer
   tlsauthtype.d tlspassword.d tlsuser.d tlsv1.0.d tlsv1.1.d tlsv1.2.d   \
   tlsv1.3.d tlsv1.d trace-ascii.d trace.d trace-time.d tr-encoding.d    \
   unix-socket.d upload-file.d url.d use-ascii.d user-agent.d user.d     \
-  verbose.d version.d write-out.d xattr.d
+  verbose.d version.d write-out.d xattr.d strip-path-slash.d
 
 OTHERPAGES = page-footer page-header

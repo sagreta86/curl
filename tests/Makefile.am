@@ -45,7 +45,7 @@ DIST_UNIT = unit
 endif
 
 SUBDIRS = certs data server libtest $(BUILD_UNIT)
-DIST_SUBDIRS = $(SUBDIRS) $(DIST_UNIT)
+DIST_SUBDIRS = $(SUBDIRS) $(DIST_UNIT) fuzz
 
 PERLFLAGS = -I$(srcdir)
 
@@ -64,6 +64,7 @@ TEST_Q = -a -s
 TEST_AM = -a -am
 TEST_F = -a -p -r
 TEST_T = -a -t
+TEST_E = -a -e
 
 # !flaky means that it'll skip all tests using the flaky keyword
 TEST_NF = -a -p -r !flaky
@@ -74,22 +75,25 @@ perlcheck:
 	@if ! test -x "$(PERL)"; then echo "No perl!"; exit 2; fi
 
 test: perlcheck all
-	$(TEST)
+	$(TEST) $(TFLAGS)
 
 quiet-test: perlcheck all
-	$(TEST) $(TEST_Q)
+	$(TEST) $(TEST_Q) $(TFLAGS)
 
 am-test: perlcheck all
-	$(TEST) $(TEST_AM)
+	$(TEST) $(TEST_AM) $(TFLAGS)
 
 full-test: perlcheck all
-	$(TEST) $(TEST_F)
+	$(TEST) $(TEST_F) $(TFLAGS)
 
 nonflaky-test: perlcheck all
-	$(TEST) $(TEST_NF)
+	$(TEST) $(TEST_NF) $(TFLAGS)
 
 torture-test: perlcheck all
-	$(TEST) $(TEST_T)
+	$(TEST) $(TEST_T) $(TFLAGS)
+
+event-test: perlcheck all
+	$(TEST) $(TEST_E) $(TFLAGS)
 
 .1.html:
 	$(MAN2HTML)
